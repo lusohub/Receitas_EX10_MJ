@@ -5,37 +5,42 @@ import redis
 from google.cloud import pubsub_v1
 from llama_cpp import Llama
 
-class MemeTextGenerator:
+class RecipeGenerator:
     def __init__(self, model_path="./model.gguf"):
         if not os.path.exists(model_path):
              model_path = "./model.gguf" 
              
-        self.llm = Llama(model_path=model_path, n_ctx=512, verbose=False)
+        # n_ctx aumentado para 1024 pois receitas podem ser maiores que piadas
+        self.llm = Llama(model_path=model_path, n_ctx=1024, verbose=False)
 
     def generate_text(self, topic):
+        # PROMPT DE SISTEMA ALTERADO PARA CONTEXTO CULINÁRIO
         prompt = f"""<|im_start|>system
-You are a funny bot. Your goal is to tell a short joke about the user's topic.
-Do not repeat yourself. Keep it very short.<|im_end|>
+You are an experienced Chef. Your goal is to suggest a delicious recipe based on the user's request.
+Provide the ingredients list and short preparation steps. Keep it concise but tasty.<|im_end|>
 <|im_start|>user
-Write a short joke about: {topic}<|im_end|>
+Write a recipe for: {topic}<|im_end|>
 <|im_start|>assistant
 """
         try:
-            print(f"Generating text for topic: {topic}")
+            print(f"Generating recipe for: {topic}")
             output = self.llm.create_completion(
                 prompt, 
-                max_tokens=128,
-                temperature=0.6,
-                repeat_penalty=1.3,
+                max_tokens=256,   # Aumentado para permitir texto maior
+                temperature=0.7,  # Ligeiramente mais criativo
+                repeat_penalty=1.1,
                 stop=["<|im_end|>", "<|endoftext|>"]
             )
             return output['choices'][0]['text'].strip()
-        except:
-            return "Error generating text"
+        except Exception as e:
+            print(f"Error generation: {e}")
+            return "Error generating recipe"
 
 def send_to_discord(webhook_url, content):
     try:
-        data = {"content": content}
+        # Formata a mensagem para ficar bonita no Discord
+        formatted_content = f"**🍽️ Receita Pronta!**\n\n{content}"
+        data = {"content": formatted_content}
         response = requests.post(webhook_url, json=data)
         response.raise_for_status()
         print(f"Sent to Discord: {response.status_code}")
@@ -49,20 +54,23 @@ def callback(message):
         data = json.loads(message.data.decode('utf-8'))
         instruction = data.get('instruction', '')
         
-        print(f"Processing instruction: {instruction}")
+        print(f"Processing recipe for: {instruction}")
         
-        cached_meme = redis_client.get(instruction)
-        if cached_meme:
-            meme_text = cached_meme.decode('utf-8')
-            print(f"Using cached meme: {meme_text}")
+        # Cache no Redis (Chave: ingrediente -> Valor: receita)
+        cached_recipe = redis_client.get(instruction)
+        
+        if cached_recipe:
+            recipe_text = cached_recipe.decode('utf-8')
+            print("Using cached recipe from Redis")
         else:
-            meme_text = generator.generate_text(instruction)
-            redis_client.set(instruction, meme_text)
-            print(f"Generated meme: {meme_text}")
+            recipe_text = generator.generate_text(instruction)
+            # Guarda no Redis com expiração de 24h (opcional, mas boa prática)
+            redis_client.setex(instruction, 86400, recipe_text)
+            print("Generated new recipe")
         
         webhook_url = os.environ.get('DISCORD_URL')
         if webhook_url:
-            send_to_discord(webhook_url, meme_text)
+            send_to_discord(webhook_url, recipe_text)
         else:
             print("Warning: DISCORD_URL not set")
         
@@ -87,16 +95,8 @@ def main():
         password=redis_auth_string, 
         decode_responses=False,
         socket_connect_timeout=5,
-        socket_timeout=5,
         retry_on_timeout=True
     )
-    
-    try:
-        redis_client.ping()
-        print("Successfully connected to Redis")
-    except Exception as e:
-        print(f"Failed to connect to Redis: {e}")
-        return
     
     project_id = os.environ.get('GCP_PROJECT_ID')
     subscription_id = os.environ.get('PUBSUB_SUBSCRIPTION_ID')
@@ -108,20 +108,16 @@ def main():
     subscriber = pubsub_v1.SubscriberClient()
     subscription_path = subscriber.subscription_path(project_id, subscription_id)
     
-    print(f"Listening to: {subscription_path}")
-    
     streaming_pull_future = subscriber.subscribe(subscription_path, callback=callback)
-    
-    print("Listening for messages on Pub/Sub...")
+    print(f"Listening for recipes on: {subscription_path}...")
     
     try:
         streaming_pull_future.result()
     except KeyboardInterrupt:
         streaming_pull_future.cancel()
-        print("Stopped listening")
 
-
-generator = MemeTextGenerator()
+# Inicializa o Gerador
+generator = RecipeGenerator()
 
 if __name__ == "__main__":
     main()
