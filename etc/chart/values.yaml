@@ -3,7 +3,7 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-replicaCount: 2
+replicaCount: 1
 
 projectId: ""
 
